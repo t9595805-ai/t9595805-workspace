@@ -1,0 +1,551 @@
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+    except Exception as exc:
+        return 127, "", str(exc)
+
+    spinner = "|/-\\"
+    frame = 0
+
+    while p.poll() is None:
+        elapsed = time.monotonic() - start
+
+        print(
+            f"\r      Shizuku {spinner[frame % len(spinner)]} "
+            f"{elapsed:5.1f}s",
+            end="",
+            flush=True
+        )
+
+        frame += 1
+
+        if elapsed >= timeout:
+            p.kill()
+            out, err = p.communicate()
+
+            print(
+                "\r      Shizuku TIMEOUT "
+                f"after {elapsed:.1f}s"
+                + " " * 20
+            )
+
+            return (
+                124,
+                out,
+                err or f"Command timed out after {timeout}s"
+            )
+
+        time.sleep(0.5)
+
+    out, err = p.communicate()
+
+    elapsed = time.monotonic() - start
+
+    print(
+        f"\r      Shizuku ✓ {elapsed:.1f}s"
+        + " " * 20
+    )
+
+    return p.returncode, out, err
+
+وبالتالي dumpsys usagestats لن يبقى صامتًا لدقائق بدون أي دليل على أنه شغال.
+
+وأفضل تعدل استدعاء usage إلى:
+
+usage_code, usage_out, usage_err = run_rish(
+    "dumpsys usagestats",
+    timeout=120
+)
+
+لأن بيانات Usage Stats قد تكون كبيرة، فلا أريد timeout قصيرًا جدًا.
+
+رابعًا: أصلح الـ bug الحقيقي
+
+ابحث عن:
+
+removed = folders_plan[
+    DEFAULTS[
+        "max_folders":
+    ]
+]
+
+واجعله:
+
+removed = folders_plan[
+    DEFAULTS[
+        "max_folders"
+    ]:
+]
+
+الفرق مهم جدًا: الـ : يجب أن يكون بعد إغلاق DEFAULTS[...].
+
+خامسًا: أضف progress أوضح داخل الـ scan
+
+قبل كل مجموعة كبيرة، خلي الرسائل هكذا:
+
+print("[1/7] Reading device properties...")
+
+ثم:
+
+print("[2/7] Reading launcher database...")
+
+ثم:
+
+print("[3/7] Reading launcher screens...")
+
+ثم:
+
+print("[4/7] Dumping launcher UI hierarchy...")
+
+ثم:
+
+print("[5/7] Collecting app usage statistics...")
+
+ثم:
+
+print("[6/7] Building intelligent app scores...")
+
+ثم:
+
+print("[7/7] Building folder plan...")
+
+هذا مع الـ spinner سيخليك تعرف بالضبط أين هو.
+
+النتيجة المتوقعة بعد التعديلات
+
+بدل:
+
+[1/9] Checking Termux storage...
+
+وتفضل واقف، ستشوف شيئًا مثل:
+
+[1/9] Checking Termux storage...
+  ~/storage already exists.
+  Skipping termux-setup-storage to avoid the hidden confirmation prompt.
+  OK: shared storage is accessible.
+
+[2/9] Installing Python...
+...
+[3/9] Locating the exported Shizuku files...
+  rish: /storage/...
+  dex : /storage/...
+
+[5/9] Testing Shizuku <-> Termux...
+
+uid=2000(shell) gid=2000(shell)...
+
+[6/9] Creating the Smart Organizer engine...
+
+[8/9] Running the first READ-ONLY scan...
+
+[1/7] Reading device properties...
+      Shizuku ✓ 0.3s
+...
+[5/7] Collecting app usage statistics...
+      Shizuku | 14.5s
+      Shizuku / 15.0s
+      Shizuku ✓ 15.7s
+
+والـ rish نفسه مصمم ليشغّل أوامر shell بهذه الطريقة عبر Shizuku. 
+
+النقطة المهمة: أنا لا أنصح بتوصيل جزء "الترتيب الفعلي" بهذا السكربت الآن. أولًا لازم ينجح الـ scan ويطلع REPORT.txt وplan.json بشكل صحيح؛ بعد ذلك نضيف مرحلة APPLY منفصلة تعمل backup لقاعدة launcher قبل أي insert/update/delete. ده مهم لأن السكربت الحالي أصلًا Read-Only، وأي خطأ في provider أو container/screen/cellX/cellY ممكن يلخبط الـ launcher بدل ما يصلحه."
+
+
+U MF PIECE OF SHIT MAKE THE WHOLE CODE ONE BIG COPY PASTE U STUPID NIGGER DON'T MAKE ME DO ALL THE MANUAL WORK U BITCH ASS NIGGA
+then u nigga see
+Worked for 4m 1s
+
+راجعت الملف كاملًا؛ النسخة الأصلية كانت فعلًا READ_ONLY ولا تنفّذ الترتيب، وفيها أخطاء منها max_folders: والـmain guard، كما أن إصلاح الـspinner السابق كان يمكن أن يظل يعلق بسبب امتلاء pipe مع dumpsys. 
+
+هذا أمر واحد فقط. الصقه كاملًا في Termux. يثبت/يجهز rish، يفحص التطبيقات، يحسب الاستخدام، يكوّن فولدرات مدمجة، يحرّك التطبيقات فعليًا، يتحقق من النتيجة، ويحفظ rollback تلقائيًا. وطريقة RISH_APPLICATION_ID=com.termux واشتراط أن يكون الـDEX غير قابل للكتابة متوافقة مع rish الرسمي. 
+
+#!/data/data/com.termux/files/usr/bin/bash
+set -Eeuo pipefail
+export PATH="$PREFIX/bin:$PATH"
+BASE="$HOME/hyperos_organizer"; BIN="$PREFIX/bin"; BOX="$HOME/storage/shared/hyperos_sandbox"
+mkdir -p "$BASE/raw"
+
+echo "============================================================"
+echo " HYPEROS SMART ORGANIZER — AUTO APPLY"
+echo "============================================================"
+echo "[1/6] Termux storage..."
+if [ ! -d "$HOME/storage/shared" ]; then
+  termux-setup-storage
+fi
+[ -d "$HOME/storage/shared" ] || { echo "ERROR: shared storage unavailable."; exit 10; }
+echo "  OK"
+
+echo "[2/6] Python..."
+command -v python >/dev/null 2>&1 || pkg install -y python
+echo "  OK"
+
+echo "[3/6] Shizuku..."
+RISH_SRC=""; DEX_SRC=""
+for d in "$BOX" "$HOME/storage/shared/Shizuku" "$HOME/storage/shared/shizuku" "$HOME"; do
+  [ -n "$RISH_SRC" ] && [ -f "$RISH_SRC" ] || { [ -f "$d/rish" ] && RISH_SRC="$d/rish"; }
+  [ -n "$DEX_SRC" ] && [ -f "$DEX_SRC" ] || { [ -f "$d/rish_shizuku.dex" ] && DEX_SRC="$d/rish_shizuku.dex"; }
+done
+if [ -f "$BIN/rish" ] && [ -f "$BIN/rish_shizuku.dex" ]; then
+  RISH_SRC="$BIN/rish"; DEX_SRC="$BIN/rish_shizuku.dex"
+fi
+if [ -z "$RISH_SRC" ] || [ -z "$DEX_SRC" ]; then
+  echo "ERROR: rish + rish_shizuku.dex not found."
+  echo "Put the exported Shizuku files in ~/storage/shared/hyperos_sandbox/"
+  exit 20
+fi
+cp -f "$RISH_SRC" "$BIN/rish"
+cp -f "$DEX_SRC" "$BIN/rish_shizuku.dex"
+chmod 755 "$BIN/rish"
+chmod 400 "$BIN/rish_shizuku.dex"
+if grep -qE 'RISH_APPLICATION_ID="[^"]*"' "$BIN/rish"; then
+  sed -i 's/RISH_APPLICATION_ID="[^"]*"/RISH_APPLICATION_ID="com.termux"/g' "$BIN/rish"
+else
+  printf '\nexport RISH_APPLICATION_ID="com.termux"\n' >> "$BIN/rish"
+fi
+ID_OUT="$(rish -c id 2>&1 || true)"
+printf '%s\n' "$ID_OUT"
+printf '%s\n' "$ID_OUT" | grep -Eq 'uid=2000|uid=0' || {
+  echo "ERROR: authorize Termux in Shizuku -> Use Shizuku in terminal apps."
+  exit 30
+}
+
+echo "[4/6] Installing engine..."
+cat > "$BASE/hyperorganizer.py" <<'PY'
+#!/data/data/com.termux/files/usr/bin/python
+import json,math,os,re,shlex,shutil,subprocess,sys,tempfile,time
+from collections import defaultdict
+from pathlib import Path
+
+B=Path.home()/"hyperos_organizer"
+RAW=B/"raw"; C=B/"config.json"; P=B/"plan.json"; S=B/"rollback.json"; R=B/"REPORT.txt"
+B.mkdir(parents=True,exist_ok=True); RAW.mkdir(parents=True,exist_ok=True)
+
+D={
+    "keep_outside_max_count":12,
+    "keep_outside_fraction":0.25,
+    "folder_min_apps":3,
+    "folder_max_apps":8,
+    "max_folders":6,
+    "half_life_days":14,
+    "folder_cols":4,
+    "folder_rows":4
+}
+
+if not C.exists():
+    C.write_text(json.dumps(D,indent=2),encoding="utf-8")
+
+try:
+    CFG=json.loads(C.read_text(encoding="utf-8"))
+except:
+    CFG={}
+
+for k,v in D.items():
+    CFG.setdefault(k,v)
+
+RISH=shutil.which("rish") or str(Path(os.environ.get("PREFIX",""))/"bin"/"rish")
+
+def rr(cmd,timeout=60):
+    a=time.monotonic()
+    op=er=None
+    p=None
+    try:
+        f1=tempfile.NamedTemporaryFile(delete=False)
+        f2=tempfile.NamedTemporaryFile(delete=False)
+        op,er=f1.name,f2.name
+        f1.close();f2.close()
+
+        with open(op,"w",encoding="utf-8",errors="ignore") as o, \
+             open(er,"w",encoding="utf-8",errors="ignore") as e:
+            p=subprocess.Popen([RISH,"-c",cmd],stdout=o,stderr=e)
+            sp="|/-\\"
+            i=0
+            while p.poll() is None:
+                t=time.monotonic()-a
+                print(f"\r      Shizuku {sp[i%4]} {t:6.1f}s",end="",flush=True)
+                i+=1
+                if t>=timeout:
+                    try:
+                        p.kill()
+                    except:
+                        pass
+                    p.wait()
+                    print(f"\r      Shizuku TIMEOUT {t:.1f}s"+" "*20)
+                    return 124,Path(op).read_text(errors="ignore"),Path(er).read_text(errors="ignore")
+                time.sleep(.5)
+
+        t=time.monotonic()-a
+        print(f"\r      Shizuku {'OK' if p.returncode==0 else 'FAIL'} {t:.1f}s"+" "*20)
+        return p.returncode,Path(op).read_text(errors="ignore"),Path(er).read_text(errors="ignore")
+
+    except Exception as x:
+        return 127,"",str(x)
+
+    finally:
+        for x in(op,er):
+            if x:
+                try:
+                    os.unlink(x)
+                except:
+                    pass
+
+def q(x):
+    return shlex.quote(str(x))
+
+def run(cmd,timeout=60):
+    c,o,e=rr(cmd,timeout)
+    if c:
+        return False,o,e
+    return True,o,e
+
+def rows(t):
+    out=[]
+    for b in t.split("Row: ")[1:]:
+        d=dict(re.findall(r'(\w+)=((?:[^,]|,(?!\s*\w+=))*)',b))
+        if d:
+            out.append({k:v.strip() for k,v in d.items()})
+    return out
+
+def num(x,d=0):
+    try:
+        return int(x)
+    except:
+        try:
+            return float(x)
+        except:
+            return d
+
+def pkg(i):
+    m=re.search(r'(?:component=|package=)([^/;,\s]+)',i or "")
+    if not m:
+        m=re.search(r'package:([^/;,\s]+)',i or "")
+    return m.group(1) if m else None
+
+def usage(t):
+    z={}
+    for b in re.split(r'(?=package=[^\s]+)',t or ""):
+        m=re.search(r'package=([^\s]+)',b)
+        if not m or "." not in m.group(1):
+            continue
+        p=m.group(1).rstrip(",")
+        g={}
+        for k in(
+            "totalTimeInForeground",
+            "totalTimeForeground",
+            "totalTimeUsed",
+            "lastTimeUsed",
+            "lastTimeForeground",
+            "appLaunchCount"
+        ):
+            m2=re.search(rf'{k}=([0-9]+)',b)
+            if m2:
+                g[k]=int(m2.group(1))
+
+        d=z.setdefault(p,[0,0,0])
+        d[0]=max(
+            d[0],
+            g.get("totalTimeInForeground",0),
+            g.get("totalTimeForeground",0),
+            g.get("totalTimeUsed",0)
+        )
+        d[1]=max(
+            d[1],
+            g.get("lastTimeUsed",0),
+            g.get("lastTimeForeground",0)
+        )
+        d[2]=max(d[2],g.get("appLaunchCount",0))
+    return z
+
+K={
+"Communication":"whatsapp telegram messenger messages sms discord signal wechat line imo viber email gmail outlook mail",
+"Social":"facebook instagram tiktok twitter reddit snapchat threads pinterest linkedin",
+"Media":"youtube spotify netflix prime video plex vlc mx player music podcast video gallery photos twitch",
+"Games":"game games pubg free fire minecraft roblox genshin honor of kings codm call of duty steam",
+"Study":"school study education classroom moodle duolingo quizlet notion anki coursera udemy drive docs word powerpoint",
+"Work":"slack teams zoom meet office excel calendar todo trello asana jira work",
+"Finance":"bank wallet paypal wise stripe finance cash money instapay fawry vodafone cash",
+"Shopping":"amazon noon ebay shop shopping temu shein delivery talabat instashop",
+"Travel":"maps uber careem booking airbnb travel bolt transit",
+"Creative":"canva capcut lightroom photoshop editor picsart camera draw",
+"Cloud":"drive dropbox onedrive mega icloud cloud",
+"AI":"chatgpt gemini claude copilot perplexity artificial intelligence",
+"Browser":"chrome firefox brave edge opera browser duckduckgo",
+"Tools":"calculator clock files file manager recorder scanner terminal manager vpn authenticator password",
+"System":"settings security system phone contacts camera"
+}
+K={k:v.split() for k,v in K.items()}
+
+def cat(label,p):
+    t=f" {label or ''} {p or ''} ".lower()
+    for c,w in K.items():
+        if any(x in t for x in w):
+            return c
+    return "Other"
+
+def score(u,now):
+    if not u:
+        return 0.0
+
+    tm=min(1,math.log1p(max(0,u[0])/60000)/math.log1p(600))
+    la=min(1,math.log1p(max(0,u[2]))/math.log1p(100))
+    recc=0
+
+    if u[1] and u[1]<=now:
+        age=(now-u[1])/86400000
+        recc=math.exp(-math.log(2)*max(0,age)/CFG["half_life_days"])
+
+    return round(.55*tm+.25*la+.20*recc,4)
+
+def cc(uri,act,bind=(),where=None):
+    a=["content",act,"--uri",q(uri)]
+    for b in bind:
+        a+=["--bind",q(b)]
+    if where:
+        a+=["--where",q(where)]
+    return " ".join(a)
+
+def upd(uri,i,c,s,x,y):
+    ok,o,e=run(
+        cc(
+            uri,
+            "update",
+            [
+                f"container:i:{c}",
+                f"screen:i:{s}",
+                f"cellX:i:{x}",
+                f"cellY:i:{y}"
+            ],
+            f"_id={i}"
+        ),
+        30
+    )
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"update failed: {i}")
+
+def ins(uri,i,title,s,x,y):
+    b=[
+        f"_id:i:{i}",
+        "itemType:i:2",
+        "container:i:-100",
+        f"screen:i:{s}",
+        f"cellX:i:{x}",
+        f"cellY:i:{y}",
+        "spanX:i:1",
+        "spanY:i:1",
+        f"title:s:{title}"
+    ]
+    ok,o,e=run(cc(uri,"insert",b),30)
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"insert failed: {title}")
+
+def fupd(uri,i,title,s,x,y):
+    ok,o,e=run(
+        cc(
+            uri,
+            "update",
+            [
+                "itemType:i:2",
+                "container:i:-100",
+                f"screen:i:{s}",
+                f"cellX:i:{x}",
+                f"cellY:i:{y}",
+                f"title:s:{title}"
+            ],
+            f"_id={i}"
+        ),
+        30
+    )
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"folder update failed: {i}")
+
+def dele(uri,i):
+    ok,o,e=run(cc(uri,"delete",(),f"_id={i}"),30)
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"delete failed: {i}")
+
+def restart(lp):
+    rr(f"am force-stop {q(lp)}",15)
+    time.sleep(1)
+    rr(
+        "am start -a android.intent.action.MAIN "
+        "-c android.intent.category.HOME >/dev/null 2>&1",
+        20
+    )
+    time.sleep(2)
+
+def slots(items,exclude):
+    return list(dict.fromkeys(
+        (
+            int(x["screen"]),
+            int(x["cellX"]),
+            int(x["cellY"])
+        )
+        for x in items
+        if x["itemType"]==0
+        and x["container"]==-100
+        and x["id"] not in exclude
+    ))
+
+def balanced(ss,n):
+    if n==0:
+        return []
+    if len(ss)<n:
+        return []
+
+    cx=sum(s[1] for s in ss)/len(ss)
+    cy=sum(s[2] for s in ss)/len(ss)
+    rem=ss[:]
+
+    a=min(
+        rem,
+        key=lambda s:(
+            abs(s[1]-cx)+abs(s[2]-cy),
+            s[0],
+            s[1],
+            s[2]
+        )
+    )
+    out=[a]
+    rem.remove(a)
+
+    def dist(x,y):
+        return (
+            abs(x[0]-y[0])*4+
+            abs(x[1]-y[1])+
+            abs(x[2]-y[2])
+        )
+
+    while rem and len(out)<n:
+        z=max(
+            rem,
+            key=lambda s:min(dist(s,a) for a in out)
+        )
+        out.append(z)
+        rem.remove(z)
+
+    return out
+
+def verify(pp,provider):
+    ok,o,e=run(f"content query --uri {q(provider)}",30)
+    if not ok or "Row:" not in o:
+        raise RuntimeError("Post-apply verification could not read launcher database.")
+
+    by={}
+    for x in rows(o):
+        try:
+            by[int(num(x.get("_id"),-1))]=x
+        except:
+            pass
+
+    for f in pp["folders"]:
+        x=by.get(f["id"])
+        if not x:
+            raise RuntimeError(f"Verification failed for folder {f['name']}.")
+
+        if int(num(x.get("itemType"),-1))!=2:
+            raise RuntimeError(f"Verification failed for folder {f['name']}.")
+
+        if int(num(x.get("container"),-999))!=-100:
+            raise RuntimeError(f"Verification failed for folder {f['name']}.")
+
+        pos=(
+            int(num(x.get("screen"),-1)),
