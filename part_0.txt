@@ -1,0 +1,900 @@
+بقولك انت كنت اديتني كوماند
+"cat > ~/hyperos_bootstrap.sh <<'BOOTSTRAP'
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+echo
+echo "============================================================"
+echo "        HYPEROS SMART ORGANIZER — FULL BOOTSTRAP"
+echo "============================================================"
+echo
+
+export PATH="$PREFIX/bin:$PATH"
+BASE="$HOME/hyperos_organizer"
+BIN="$PREFIX/bin"
+SHIZUKU_BOX="$HOME/storage/shared/hyperos_sandbox"
+
+mkdir -p "$BASE/raw"
+
+echo "[1/9] Checking Termux storage..."
+termux-setup-storage >/dev/null 2>&1 || true
+sleep 1
+
+echo "[2/9] Installing the tiny local dependencies..."
+pkg install -y python >/dev/null 2>&1 || {
+echo "ERROR: Could not install Python."
+exit 1
+}
+
+echo "[3/9] Locating the exported Shizuku files..."
+
+RISH_SRC=""
+DEX_SRC=""
+
+for d in \
+"$SHIZUKU_BOX" \
+"$HOME/storage/shared/Shizuku" \
+"$HOME/storage/shared/shizuku" \
+"$HOME"
+do
+if [ -z "$RISH_SRC" ] && [ -f "$d/rish" ]; then
+RISH_SRC="$d/rish"
+fi
+if [ -z "$DEX_SRC" ] && [ -f "$d/rish_shizuku.dex" ]; then
+DEX_SRC="$d/rish_shizuku.dex"
+fi
+done
+
+if [ -z "$RISH_SRC" ] || [ -z "$DEX_SRC" ]; then
+echo
+echo "ERROR: Could not find both exported Shizuku files."
+echo
+echo "Expected:"
+echo "  $SHIZUKU_BOX/rish"
+echo "  $SHIZUKU_BOX/rish_shizuku.dex"
+echo
+echo "Currently found:"
+find "$HOME/storage/shared" -maxdepth 4 -type f \
+\(-name 'rish' -o -name 'rish_shizuku.dex'\) 2>/dev/null \
+| sed 's#^#  #'
+exit 2
+fi
+
+echo "  rish: $RISH_SRC"
+echo "  dex : $DEX_SRC"
+
+echo "[4/9] Installing rish correctly into Termux private storage..."
+
+cp -f "$RISH_SRC" "$BIN/rish"
+cp -f "$DEX_SRC" "$BIN/rish_shizuku.dex"
+
+chmod 755 "$BIN/rish"
+chmod 400 "$BIN/rish_shizuku.dex"
+
+Force the correct Termux application ID.
+
+sed -i \
+-e 's/RISH_APPLICATION_ID="PKG"/RISH_APPLICATION_ID="com.termux"/g' \
+-e 's/export RISH_APPLICATION_ID="PKG"/export RISH_APPLICATION_ID="com.termux"/g' \
+"$BIN/rish"
+
+If the exported file has a different old placeholder, replace it.
+
+sed -i 's/RISH_APPLICATION_ID="[^"]*"/RISH_APPLICATION_ID="com.termux"/g' "$BIN/rish"
+
+if ! grep -q 'RISH_APPLICATION_ID="com.termux"' "$BIN/rish"; then
+echo 'export RISH_APPLICATION_ID="com.termux"' >> "$BIN/rish"
+fi
+
+echo "[5/9] Testing Shizuku <-> Termux..."
+echo
+
+RISH_TEST="$(rish -c 'id' 2>&1 || true)"
+echo "$RISH_TEST"
+
+if ! echo "$RISH_TEST" | grep -Eq 'uid=2000|uid=0'; then
+echo
+echo "============================================================"
+echo "RISH IS NOT AUTHORIZED YET"
+echo "============================================================"
+echo
+echo "The files are installed correctly, but Shizuku has not"
+echo "authorized Termux for terminal use."
+echo
+echo "Open:"
+echo "Shizuku -> Use Shizuku in terminal apps"
+echo
+echo "Then make sure Termux is allowed/authorized there."
+echo "After that run:"
+echo
+echo "  rish -c 'id'"
+echo
+echo "Do NOT use adb for this."
+exit 3
+fi
+
+echo
+echo "[6/9] Creating the Smart Organizer engine..."
+
+cat > "$BASE/hyperorganizer.py" <<'PY'
+#!/data/data/com.termux/files/usr/bin/python
+
+import os
+import re
+import json
+import math
+import time
+import subprocess
+import shutil
+from pathlib import Path
+from collections import defaultdict
+
+BASE = Path.home() / "hyperos_organizer"
+RAW = BASE / "raw"
+BASE.mkdir(parents=True, exist_ok=True)
+RAW.mkdir(parents=True, exist_ok=True)
+
+CONF = BASE / "config.json"
+
+DEFAULTS = {
+"keep_outside_min_score": 0.58,
+"keep_outside_max_count": 12,
+"keep_outside_percentile": 0.72,
+"folder_min_apps": 3,
+"folder_max_apps": 8,
+"max_folders": 6,
+"recency_half_life_days": 14,
+"preserve_existing_folders": True,
+"weights": {
+"time": 0.55,
+"launches": 0.25,
+"recency": 0.20
+}
+}
+
+if not CONF.exists():
+CONF.write_text(
+json.dumps(DEFAULTS, indent=2, ensure_ascii=False),
+encoding="utf-8"
+)
+
+RISH = shutil.which("rish") or str(
+Path(os.environ.get("PREFIX", "")) / "bin" / "rish"
+)
+
+def run_rish(command):
+p = subprocess.run(
+[RISH, "-c", command],
+text=True,
+capture_output=True
+)
+return p.returncode, p.stdout, p.stderr
+
+def must_rish(command):
+code, out, err = run_rish(command)
+if code != 0:
+raise RuntimeError(
+err.strip() or out.strip() or f"rish failed: {command}"
+)
+return out
+
+def save(name, text):
+(RAW / name).write_text(
+text,
+encoding="utf-8",
+errors="ignore"
+)
+
+def n(v, default=0):
+try:
+return int(v)
+except Exception:
+try:
+return float(v)
+except Exception:
+return default
+
+def parse_rows(text):
+rows = []
+
+for block in text.split("Row: ")[1:]:  
+    found = re.findall(  
+        r'(\w+)=((?:[^,]|,(?!\s*\w+=))*)',  
+        block.strip()  
+    )  
+
+    row = {}  
+
+    for key, value in found:  
+        row[key] = value.strip()  
+
+    if row:  
+        rows.append(row)  
+
+return rows
+
+def package_from_intent(intent):
+if not intent:
+return None
+
+m = re.search(  
+    r'(?:component=|package=)([^/;,\s]+)',  
+    intent  
+)  
+
+if m:  
+    return m.group(1)  
+
+m = re.search(  
+    r'package:([^/;,\s]+)',  
+    intent  
+)  
+
+if m:  
+    return m.group(1)  
+
+return None
+
+def parse_usage(text):
+result = {}
+
+pieces = re.split(  
+    r'(?=package=[^\s]+)',  
+    text  
+)  
+
+for piece in pieces:  
+    m = re.search(  
+        r'package=([^\s]+)',  
+        piece  
+    )  
+
+    if not m:  
+        continue  
+
+    package = m.group(1).rstrip(",")  
+
+    if "." not in package:  
+        continue  
+
+    vals = {}  
+
+    for key in (  
+        "totalTimeInForeground",  
+        "totalTimeForeground",  
+        "totalTimeUsed",  
+        "lastTimeUsed",  
+        "lastTimeForeground",  
+        "appLaunchCount"  
+    ):  
+        mm = re.search(  
+            rf'{key}=([0-9]+)',  
+            piece  
+        )  
+
+        if mm:  
+            vals[key] = int(mm.group(1))  
+
+    foreground = max(  
+        vals.get("totalTimeInForeground", 0),  
+        vals.get("totalTimeForeground", 0),  
+        vals.get("totalTimeUsed", 0)  
+    )  
+
+    last_used = max(  
+        vals.get("lastTimeUsed", 0),  
+        vals.get("lastTimeForeground", 0)  
+    )  
+
+    launches = vals.get(  
+        "appLaunchCount",  
+        0  
+    )  
+
+    old = result.get(  
+        package,  
+        {  
+            "time_ms": 0,  
+            "last_ms": 0,  
+            "launches": 0  
+        }  
+    )  
+
+    old["time_ms"] = max(  
+        old["time_ms"],  
+        foreground  
+    )  
+
+    old["last_ms"] = max(  
+        old["last_ms"],  
+        last_used  
+    )  
+
+    old["launches"] = max(  
+        old["launches"],  
+        launches  
+    )  
+
+    result[package] = old  
+
+return result
+
+KEYWORDS = {
+"Communication": [
+"whatsapp", "telegram", "messenger", "messages",
+"sms", "discord", "signal", "wechat", "line",
+"imo", "viber", "email", "gmail", "outlook", "mail"
+],
+
+"Social": [  
+    "facebook", "instagram", "tiktok", "twitter", "x ",  
+    "reddit", "snapchat", "threads", "pinterest", "linkedin"  
+],  
+
+"Media": [  
+    "youtube", "spotify", "netflix", "prime video", "plex",  
+    "vlc", "mx player", "music", "podcast", "video",  
+    "gallery", "photos", "twitch"  
+],  
+
+"Games": [  
+    "game", "games", "pubg", "free fire", "minecraft",  
+    "roblox", "genshin", "honor of kings", "codm",  
+    "call of duty", "steam"  
+],  
+
+"Study": [  
+    "school", "study", "education", "classroom", "moodle",  
+    "duolingo", "quizlet", "notion", "anki", "coursera",  
+    "udemy", "drive", "docs", "word", "powerpoint"  
+],  
+
+"Work": [  
+    "slack", "teams", "zoom", "meet", "office", "excel",  
+    "calendar", "todo", "trello", "asana", "jira", "work"  
+],  
+
+"Finance": [  
+    "bank", "wallet", "paypal", "wise", "stripe", "finance",  
+    "cash", "money", "instapay", "fawry", "vodafone cash"  
+],  
+
+"Shopping": [  
+    "amazon", "noon", "ebay", "shop", "shopping", "temu",  
+    "shein", "delivery", "talabat", "instashop"  
+],  
+
+"Travel": [  
+    "maps", "uber", "careem", "booking", "airbnb",  
+    "travel", "bolt", "transit"  
+],  
+
+"Creative": [  
+    "canva", "capcut", "lightroom", "photoshop",  
+    "editor", "picsart", "camera", "draw"  
+],  
+
+"Cloud": [  
+    "drive", "dropbox", "onedrive", "mega", "icloud", "cloud"  
+],  
+
+"AI": [  
+    "chatgpt", "gemini", "claude", "copilot",  
+    "perplexity", "ai"  
+],  
+
+"Browser": [  
+    "chrome", "firefox", "brave", "edge",  
+    "opera", "browser", "duckduckgo"  
+],  
+
+"Tools": [  
+    "calculator", "clock", "files", "file manager",  
+    "recorder", "scanner", "terminal", "manager",  
+    "vpn", "authenticator", "password"  
+],  
+
+"System": [  
+    "settings", "security", "system", "phone",  
+    "contacts", "camera"  
+]
+
+}
+
+def classify(label, package):
+text = (
+f"{label or ''} {package or ''}"
+).lower()
+
+for category, words in KEYWORDS.items():  
+    for word in words:  
+        if word in text:  
+            return category  
+
+return "Other"
+
+def score_usage(usage, now_ms):
+if not usage:
+return 0.0
+
+time_minutes = max(  
+    0,  
+    usage.get("time_ms", 0)  
+) / 60000.0  
+
+time_score = min(  
+    1.0,  
+    math.log1p(time_minutes) /  
+    math.log1p(600)  
+)  
+
+launches = max(  
+    0,  
+    usage.get("launches", 0)  
+)  
+
+launch_score = min(  
+    1.0,  
+    math.log1p(launches) /  
+    math.log1p(100)  
+)  
+
+last = usage.get(  
+    "last_ms",  
+    0  
+)  
+
+if last > 0 and last <= now_ms:  
+    age_days = (  
+        now_ms - last  
+    ) / 86400000.0  
+
+    recency_score = math.exp(  
+        -max(0, age_days) / 14.0  
+    )  
+else:  
+    recency_score = 0.0  
+
+w = DEFAULTS["weights"]  
+
+return round(  
+    w["time"] * time_score  
+    + w["launches"] * launch_score  
+    + w["recency"] * recency_score,  
+    4  
+)
+
+def parse_ui_nodes(xml):
+nodes = []
+
+for match in re.finditer(  
+    r'<node\b([^>]*)/>',  
+    xml  
+):  
+    attrs = dict(  
+        re.findall(  
+            r'(\w+)="([^"]*)"',  
+            match.group(1)  
+        )  
+    )  
+
+    text = attrs.get("text", "")  
+    desc = attrs.get(  
+        "content-desc",  
+        ""  
+    )  
+    bounds = attrs.get(  
+        "bounds",  
+        ""  
+    )  
+
+    bm = re.search(  
+        r'(\d+),(\d+)(\d+),(\d+)',  
+        bounds  
+    )  
+
+    if not bm:  
+        continue  
+
+    x1, y1, x2, y2 = map(  
+        int,  
+        bm.groups()  
+    )  
+
+    if not text and not desc:  
+        continue  
+
+    nodes.append({  
+        "text": text,  
+        "desc": desc,  
+        "bounds": bounds,  
+        "center": [  
+            (x1 + x2) // 2,  
+            (y1 + y2) // 2  
+        ]  
+    })  
+
+return nodes
+
+def scan():
+if not Path(RISH).exists():
+raise RuntimeError(
+f"rish not found: {RISH}"
+)
+
+print()  
+print("=" * 64)  
+print(" HYPEROS SMART ORGANIZER")  
+print(" READ-ONLY DISCOVERY + INTELLIGENT PLAN")  
+print("=" * 64)  
+
+# ---------------------------------------------------------  
+# Device diagnostics  
+# ---------------------------------------------------------  
+
+diagnostic_commands = {  
+    "sdk":  
+        "getprop ro.build.version.sdk",  
+
+    "android":  
+        "getprop ro.build.version.release",  
+
+    "miui_ui":  
+        "getprop ro.miui.ui.version.name",  
+
+    "miui_incremental":  
+        "getprop ro.miui.build.version.incremental",  
+
+    "launcher":  
+        "cmd package resolve-activity --brief "  
+        "-a android.intent.action.MAIN "  
+        "-c android.intent.category.HOME",  
+
+    "screen":  
+        "wm size",  
+
+    "density":  
+        "wm density"  
+}  
+
+device = {}  
+
+for key, cmd in diagnostic_commands.items():  
+    try:  
+        device[key] = must_rish(cmd).strip()  
+    except Exception as exc:  
+        device[key] = (  
+            "ERROR: "  
+            + str(exc)  
+        )  
+
+save(  
+    "device.txt",  
+    json.dumps(  
+        device,  
+        indent=2,  
+        ensure_ascii=False  
+    )  
+)  
+
+print(  
+    f"[Device] Android {device.get('android', '?')} "  
+    f"SDK {device.get('sdk', '?')}"  
+)  
+
+print(  
+    f"[Device] HyperOS/MIUI: "  
+    f"{device.get('miui_ui', '?')}"  
+)  
+
+print(  
+    f"[Device] Launcher: "  
+    f"{device.get('launcher', '?')}"  
+)  
+
+print(  
+    f"[Device] Size: "  
+    f"{device.get('screen', '?')}"  
+)  
+
+# ---------------------------------------------------------  
+# Launcher provider  
+# ---------------------------------------------------------  
+
+candidate_uris = [  
+    "content://com.miui.home.launcher.settings/favorites",  
+    "content://com.android.launcher3.settings/favorites",  
+    "content://com.android.launcher.settings/favorites"  
+]  
+
+favorites_raw = ""  
+provider = None  
+
+for uri in candidate_uris:  
+    code, out, err = run_rish(  
+        f"content query --uri '{uri}'"  
+    )  
+
+    if (  
+        code == 0  
+        and "Row:" in out  
+    ):  
+        favorites_raw = out  
+        provider = uri  
+        break  
+
+if provider:  
+    print(  
+        f"[Launcher] Provider: {provider}"  
+    )  
+    save(  
+        "favorites.txt",  
+        favorites_raw  
+    )  
+else:  
+    print(  
+        "[Launcher] Provider query failed."  
+    )  
+
+    save(  
+        "favorites_error.txt",  
+        favorites_raw  
+    )  
+
+rows = parse_rows(  
+    favorites_raw  
+)  
+
+# ---------------------------------------------------------  
+# Screens table  
+# ---------------------------------------------------------  
+
+screens_raw = ""  
+
+if provider:  
+    base_provider = provider.rsplit(  
+        "/",  
+        1  
+    )[0]  
+
+    code, out, err = run_rish(  
+        "content query --uri "  
+        f"'{base_provider}/screens'"  
+    )  
+
+    if code == 0:  
+        screens_raw = out  
+
+save(  
+    "screens.txt",  
+    screens_raw  
+)  
+
+# ---------------------------------------------------------  
+# UI hierarchy  
+# ---------------------------------------------------------  
+
+ui_code, ui_out, ui_err = run_rish(  
+    "am start "  
+    "-a android.intent.action.MAIN "  
+    "-c android.intent.category.HOME "  
+    ">/dev/null 2>&1; "  
+    "sleep 1; "  
+    "uiautomator dump "  
+    "--compressed "  
+    "/sdcard/hyperorganizer_home.xml "  
+    ">/dev/null 2>&1; "  
+    "cat /sdcard/hyperorganizer_home.xml"  
+)  
+
+ui_xml = (  
+    ui_out  
+    if ui_code == 0  
+    else ""  
+)  
+
+if ui_xml:  
+    save(  
+        "home_ui.xml",  
+        ui_xml  
+    )  
+else:  
+    save(  
+        "home_ui_error.txt",  
+        ui_err  
+    )  
+
+ui_nodes = parse_ui_nodes(  
+    ui_xml  
+)  
+
+# ---------------------------------------------------------  
+# Usage stats  
+# ---------------------------------------------------------  
+
+usage_code, usage_out, usage_err = run_rish(  
+    "dumpsys usagestats"  
+)  
+
+usage_raw = (  
+    usage_out  
+    if usage_code == 0  
+    else ""  
+)  
+
+save(  
+    "usage.txt",  
+    usage_raw  
+)  
+
+usage = parse_usage(  
+    usage_raw  
+)  
+
+# ---------------------------------------------------------  
+# Normalize launcher rows  
+# ---------------------------------------------------------  
+
+items = []  
+folders = {}  
+
+for row in rows:  
+    item_type = int(  
+        n(row.get("itemType"), -1)  
+    )  
+
+    item = {  
+        "id":  
+            int(n(row.get("_id"), -1)),  
+
+        "title":  
+            row.get("title", ""),  
+
+        "intent":  
+            row.get("intent", ""),  
+
+        "container":  
+            int(n(row.get("container"), -999)),  
+
+        "screen":  
+            int(n(row.get("screen"), -1)),  
+
+        "cellX":  
+            int(n(row.get("cellX"), -1)),  
+
+        "cellY":  
+            int(n(row.get("cellY"), -1)),  
+
+        "itemType":  
+            item_type,  
+
+        "package":  
+            package_from_intent(  
+                row.get("intent", "")  
+            ),  
+
+        "label":  
+            row.get("label", "")  
+            or row.get("title", "")  
+    }  
+
+    if item_type == 2:  
+        folders[  
+            item["id"]  
+        ] = item  
+
+    items.append(item)  
+
+# ---------------------------------------------------------  
+# Enrich with actual UI coordinates  
+# ---------------------------------------------------------  
+
+for item in items:  
+    target = (  
+        item["label"]  
+        or item["title"]  
+    ).strip()  
+
+    if not target:  
+        continue  
+
+    for node in ui_nodes:  
+        if target in (  
+            node["text"],  
+            node["desc"]  
+        ):  
+            item["ui"] = node  
+            break  
+
+# ---------------------------------------------------------  
+# Apps that exist on the launcher desktop  
+# ---------------------------------------------------------  
+
+apps = []  
+
+for item in items:  
+    if item["itemType"] != 0:  
+        continue  
+
+    # -100 is the normal desktop container.  
+    # >0 means an item inside a folder.  
+    if (  
+        item["container"] == -100  
+        or item["container"] > 0  
+    ):  
+        item_usage = usage.get(  
+            item["package"],  
+            {}  
+        )  
+
+        item["usage"] = item_usage  
+
+        apps.append(  
+            item  
+        )  
+
+now_ms = int(  
+    time.time() * 1000  
+)  
+
+for item in apps:  
+    item["category"] = classify(  
+        item["label"],  
+        item["package"]  
+    )  
+
+    item["score"] = score_usage(  
+        item["usage"],  
+        now_ms  
+    )  
+
+apps.sort(  
+    key=lambda item: (  
+        -item["score"],  
+        item["category"],  
+        (item["label"] or "").lower()  
+    )  
+)  
+
+# ---------------------------------------------------------  
+# Intelligent "stay outside folders" set  
+# ---------------------------------------------------------  
+
+score_values = [  
+    item["score"]  
+    for item in apps  
+]  
+
+if score_values:  
+    ordered_scores = sorted(  
+        score_values  
+    )  
+
+    percentile_index = max(  
+        0,  
+        min(  
+            len(ordered_scores) - 1,  
+            int(  
+                (  
+                    len(ordered_scores) - 1  
+                )  
+                * DEFAULTS[  
+                    "keep_outside_percentile"  
+                ]  
+            )  
+        )  
+    )  
+
+    percentile_cutoff = (  
+        ordered_scores[  
+            percentile_index  
+        ]  
+    )  
+else:  
+    percentile_cutoff = 0.0  
+
+cutoff = max(  
+    DEFAULTS[  
+        "keep_outside_min_score"  
+    ],  
+    percentile_cutoff  

@@ -1,0 +1,861 @@
+            "lastTimeForeground",
+            "appLaunchCount"
+        ):
+            m2=re.search(rf'{k}=([0-9]+)',b)
+            if m2:
+                g[k]=int(m2.group(1))
+
+        d=z.setdefault(p,[0,0,0])
+        d[0]=max(
+            d[0],
+            g.get("totalTimeInForeground",0),
+            g.get("totalTimeForeground",0),
+            g.get("totalTimeUsed",0)
+        )
+        d[1]=max(
+            d[1],
+            g.get("lastTimeUsed",0),
+            g.get("lastTimeForeground",0)
+        )
+        d[2]=max(d[2],g.get("appLaunchCount",0))
+    return z
+
+K={
+"Communication":"whatsapp telegram messenger messages sms discord signal wechat line imo viber email gmail outlook mail",
+"Social":"facebook instagram tiktok twitter reddit snapchat threads pinterest linkedin",
+"Media":"youtube spotify netflix prime video plex vlc mx player music podcast video gallery photos twitch",
+"Games":"game games pubg free fire minecraft roblox genshin honor of kings codm call of duty steam",
+"Study":"school study education classroom moodle duolingo quizlet notion anki coursera udemy drive docs word powerpoint",
+"Work":"slack teams zoom meet office excel calendar todo trello asana jira work",
+"Finance":"bank wallet paypal wise stripe finance cash money instapay fawry vodafone cash",
+"Shopping":"amazon noon ebay shop shopping temu shein delivery talabat instashop",
+"Travel":"maps uber careem booking airbnb travel bolt transit",
+"Creative":"canva capcut lightroom photoshop editor picsart camera draw",
+"Cloud":"drive dropbox onedrive mega icloud cloud",
+"AI":"chatgpt gemini claude copilot perplexity artificial intelligence",
+"Browser":"chrome firefox brave edge opera browser duckduckgo",
+"Tools":"calculator clock files file manager recorder scanner terminal manager vpn authenticator password",
+"System":"settings security system phone contacts camera"
+}
+K={k:v.split() for k,v in K.items()}
+
+def cat(label,p):
+    t=f" {label or ''} {p or ''} ".lower()
+    for c,w in K.items():
+        if any(x in t for x in w):
+            return c
+    return "Other"
+
+def score(u,now):
+    if not u:
+        return 0.0
+
+    tm=min(1,math.log1p(max(0,u[0])/60000)/math.log1p(600))
+    la=min(1,math.log1p(max(0,u[2]))/math.log1p(100))
+    recc=0
+
+    if u[1] and u[1]<=now:
+        age=(now-u[1])/86400000
+        recc=math.exp(-math.log(2)*max(0,age)/CFG["half_life_days"])
+
+    return round(.55*tm+.25*la+.20*recc,4)
+
+def cc(uri,act,bind=(),where=None):
+    a=["content",act,"--uri",q(uri)]
+    for b in bind:
+        a+=["--bind",q(b)]
+    if where:
+        a+=["--where",q(where)]
+    return " ".join(a)
+
+def upd(uri,i,c,s,x,y):
+    ok,o,e=run(
+        cc(
+            uri,
+            "update",
+            [
+                f"container:i:{c}",
+                f"screen:i:{s}",
+                f"cellX:i:{x}",
+                f"cellY:i:{y}"
+            ],
+            f"_id={i}"
+        ),
+        30
+    )
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"update failed: {i}")
+
+def ins(uri,i,title,s,x,y):
+    b=[
+        f"_id:i:{i}",
+        "itemType:i:2",
+        "container:i:-100",
+        f"screen:i:{s}",
+        f"cellX:i:{x}",
+        f"cellY:i:{y}",
+        "spanX:i:1",
+        "spanY:i:1",
+        f"title:s:{title}"
+    ]
+    ok,o,e=run(cc(uri,"insert",b),30)
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"insert failed: {title}")
+
+def fupd(uri,i,title,s,x,y):
+    ok,o,e=run(
+        cc(
+            uri,
+            "update",
+            [
+                "itemType:i:2",
+                "container:i:-100",
+                f"screen:i:{s}",
+                f"cellX:i:{x}",
+                f"cellY:i:{y}",
+                f"title:s:{title}"
+            ],
+            f"_id={i}"
+        ),
+        30
+    )
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"folder update failed: {i}")
+
+def dele(uri,i):
+    ok,o,e=run(cc(uri,"delete",(),f"_id={i}"),30)
+    if not ok:
+        raise RuntimeError(e.strip() or o.strip() or f"delete failed: {i}")
+
+def restart(lp):
+    rr(f"am force-stop {q(lp)}",15)
+    time.sleep(1)
+    rr(
+        "am start -a android.intent.action.MAIN "
+        "-c android.intent.category.HOME >/dev/null 2>&1",
+        20
+    )
+    time.sleep(2)
+
+def slots(items,exclude):
+    return list(dict.fromkeys(
+        (
+            int(x["screen"]),
+            int(x["cellX"]),
+            int(x["cellY"])
+        )
+        for x in items
+        if x["itemType"]==0
+        and x["container"]==-100
+        and x["id"] not in exclude
+    ))
+
+def balanced(ss,n):
+    if n==0:
+        return []
+    if len(ss)<n:
+        return []
+
+    cx=sum(s[1] for s in ss)/len(ss)
+    cy=sum(s[2] for s in ss)/len(ss)
+    rem=ss[:]
+
+    a=min(
+        rem,
+        key=lambda s:(
+            abs(s[1]-cx)+abs(s[2]-cy),
+            s[0],
+            s[1],
+            s[2]
+        )
+    )
+    out=[a]
+    rem.remove(a)
+
+    def dist(x,y):
+        return (
+            abs(x[0]-y[0])*4+
+            abs(x[1]-y[1])+
+            abs(x[2]-y[2])
+        )
+
+    while rem and len(out)<n:
+        z=max(
+            rem,
+            key=lambda s:min(dist(s,a) for a in out)
+        )
+        out.append(z)
+        rem.remove(z)
+
+    return out
+
+def verify(pp,provider):
+    ok,o,e=run(f"content query --uri {q(provider)}",30)
+    if not ok or "Row:" not in o:
+        raise RuntimeError("Post-apply verification could not read launcher database.")
+
+    by={}
+    for x in rows(o):
+        try:
+            by[int(num(x.get("_id"),-1))]=x
+        except:
+            pass
+
+    for f in pp["folders"]:
+        x=by.get(f["id"])
+        if not x:
+            raise RuntimeError(f"Verification failed for folder {f['name']}.")
+
+        if int(num(x.get("itemType"),-1))!=2:
+            raise RuntimeError(f"Verification failed for folder {f['name']}.")
+
+        if int(num(x.get("container"),-999))!=-100:
+            raise RuntimeError(f"Verification failed for folder {f['name']}.")
+
+        pos=(
+            int(num(x.get("screen"),-1)),
+            int(num(x.get("cellX"),-1)),
+            int(num(x.get("cellY"),-1))
+        )
+
+        if pos!=(f["screen"],f["cellX"],f["cellY"]):
+            raise RuntimeError(f"Verification failed for folder position {f['name']}.")
+
+        for a in f["apps"]:
+            x=by.get(a["id"])
+            if(
+                not x
+                or int(num(x.get("container"),-999))!=f["id"]
+                or int(num(x.get("screen"),-1))!=0
+                or int(num(x.get("cellX"),-1))!=a["cellX"]
+                or int(num(x.get("cellY"),-1))!=a["cellY"]
+            ):
+                raise RuntimeError(f"Verification failed for app {a['title']}.")
+
+    for a in pp["outside"]:
+        x=by.get(a["id"])
+
+        if a["nested"]:
+            if not x or int(num(x.get("container"),-999))!=-100:
+                raise RuntimeError(f"Verification failed for outside app {a['title']}.")
+
+        if(
+            not x
+            or int(num(x.get("container"),-999))!=-100
+            or (
+                int(num(x.get("screen"),-1)),
+                int(num(x.get("cellX"),-1)),
+                int(num(x.get("cellY"),-1))
+            )!=(a["screen"],a["cellX"],a["cellY"])
+        ):
+            raise RuntimeError(f"Verification failed for outside app {a['title']}.")
+
+def rollback(st):
+    restart(st["launcher"])
+
+    for x in st.get("items",[]):
+        try:
+            upd(
+                st["provider"]+"?notify=true",
+                x["id"],
+                x["c"],
+                x["s"],
+                x["x"],
+                x["y"]
+            )
+        except:
+            pass
+
+    for x in st.get("new",[]):
+        try:
+            dele(st["provider"]+"?notify=true",x)
+        except:
+            pass
+
+    for f in st.get("folders",[]):
+        try:
+            fupd(
+                st["provider"]+"?notify=true",
+                f["id"],
+                f["title"],
+                f["s"],
+                f["x"],
+                f["y"]
+            )
+        except:
+            pass
+
+    restart(st["launcher"])
+
+def apply(pp,st):
+    ok,o,e=run(
+        cc(
+            st["provider"],
+            "update",
+            ["cellX:i:0"],
+            "_id=0"
+        ),
+        30
+    )
+
+    if not ok:
+        raise RuntimeError(
+            "Launcher provider is readable but not writable through Shizuku: "
+            +(e.strip() or o.strip())
+        )
+
+    restart(st["launcher"])
+
+    try:
+        exist={f["id"] for f in st["folders"]}
+
+        for a in pp["outside"]:
+            if a["nested"]:
+                upd(
+                    st["provider"]+"?notify=true",
+                    a["id"],
+                    -100,
+                    a["screen"],
+                    a["cellX"],
+                    a["cellY"]
+                )
+
+        for f in pp["folders"]:
+            if f["id"] in exist:
+                fupd(
+                    st["provider"]+"?notify=true",
+                    f["id"],
+                    f["name"],
+                    f["screen"],
+                    f["cellX"],
+                    f["cellY"]
+                )
+            else:
+                ins(
+                    st["provider"]+"?notify=true",
+                    f["id"],
+                    f["name"],
+                    f["screen"],
+                    f["cellX"],
+                    f["cellY"]
+                )
+
+            for a in f["apps"]:
+                upd(
+                    st["provider"]+"?notify=true",
+                    a["id"],
+                    f["id"],
+                    0,
+                    a["cellX"],
+                    a["cellY"]
+                )
+
+        used={f["id"] for f in pp["folders"]}
+
+        for f in st["folders"]:
+            if f["id"] not in used:
+                dele(
+                    st["provider"]+"?notify=true",
+                    f["id"]
+                )
+
+        verify(pp,st["provider"])
+        restart(st["launcher"])
+
+    except:
+        rollback(st)
+        raise
+
+def plan():
+    print("[1/7] Device...")
+    dev={}
+
+    dc={
+        "android":"getprop ro.build.version.release",
+        "sdk":"getprop ro.build.version.sdk",
+        "hyperos":"getprop ro.miui.ui.version.name",
+        "launcher":"cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME",
+        "size":"wm size",
+        "density":"wm density"
+    }
+
+    for k,c in dc.items():
+        ok,o,e=run(c,30)
+        dev[k]=o.strip() if ok else "ERROR: "+(e.strip() or o.strip())
+
+    lm=re.search(r'([A-Za-z0-9_.]+)(?:/)',dev["launcher"])
+    lp=lm.group(1) if lm else "com.miui.home"
+
+    print("[2/7] Launcher database...")
+    provider=None
+    fav=""
+
+    for u in(
+        "content://com.miui.home.launcher.settings/favorites",
+        "content://com.android.launcher3.settings/favorites",
+        "content://com.android.launcher.settings/favorites"
+    ):
+        ok,o,e=run(f"content query --uri {q(u)}",30)
+        if ok and "Row:" in o:
+            provider=u
+            fav=o
+            break
+
+    if not provider:
+        raise RuntimeError("No readable launcher favorites provider.")
+
+    (RAW/"favorites.txt").write_text(fav,encoding="utf-8")
+    rs=rows(fav)
+
+    if not rs:
+        raise RuntimeError("Launcher provider returned no rows.")
+
+    print(f"  Provider: {provider} | rows: {len(rs)}")
+
+    print("[3/7] Launcher UI...")
+    ok,ui,e=run(
+        "am start -a android.intent.action.MAIN "
+        "-c android.intent.category.HOME >/dev/null 2>&1; "
+        "sleep 1; "
+        "uiautomator dump --compressed "
+        "/sdcard/hyperorganizer_home.xml >/dev/null 2>&1; "
+        "cat /sdcard/hyperorganizer_home.xml",
+        45
+    )
+    (RAW/"home_ui.xml").write_text(ui if ok else "",encoding="utf-8")
+
+    items=[]
+    folders={}
+
+    for r in rs:
+        iid=int(num(r.get("_id"),-1))
+        if iid<0:
+            continue
+
+        x={
+            "id":iid,
+            "title":r.get("title",""),
+            "intent":r.get("intent",""),
+            "container":int(num(r.get("container"),-999)),
+            "screen":int(num(r.get("screen"),-1)),
+            "cellX":int(num(r.get("cellX"),-1)),
+            "cellY":int(num(r.get("cellY"),-1)),
+            "itemType":int(num(r.get("itemType"),-1))
+        }
+
+        x["package"]=pkg(x["intent"])
+        x["label"]=r.get("label") or x["title"]
+
+        items.append(x)
+
+        if x["itemType"]==2:
+            folders[iid]=x
+
+    apps=[
+        x for x in items
+        if x["itemType"]==0
+        and (x["container"]==-100 or x["container"]>0)
+    ]
+
+    desk=[x for x in apps if x["container"]==-100]
+
+    print(
+        f"  Apps: {len(apps)} | desktop: {len(desk)} "
+        f"| existing folders: {len(folders)}"
+    )
+
+    print("[4/7] Usage stats...")
+    ok,ur,e=run("dumpsys usagestats",180)
+
+    if not ok:
+        print("  WARNING: usage stats unavailable; treating usage as 0.")
+        ur=""
+
+    (RAW/"usage.txt").write_text(ur,encoding="utf-8")
+
+    u=usage(ur)
+    now=int(time.time()*1000)
+
+    for x in apps:
+        x["score"]=score(u.get(x["package"],[]),now)
+        x["category"]=cat(x["label"],x["package"])
+
+    out=sorted(
+        apps,
+        key=lambda x:(-x["score"],(x["label"] or "").lower())
+    )[
+        :min(
+            CFG["keep_outside_max_count"],
+            max(
+                3,
+                round(len(apps)*CFG["keep_outside_fraction"])
+            )
+        )
+    ]
+
+    outids={x["id"] for x in out}
+    g=defaultdict(list)
+
+    for x in apps:
+        if x["id"] not in outids:
+            g[x["category"]].append(x)
+
+    fp=[]
+    loose=[]
+
+    for c,v in sorted(
+        g.items(),
+        key=lambda z:(-len(z[1]),z[0])
+    ):
+        if c=="Other" or len(v)<CFG["folder_min_apps"]:
+            loose+=v
+            continue
+
+        for i in range(0,len(v),CFG["folder_max_apps"]):
+            ch=v[i:i+CFG["folder_max_apps"]]
+
+            if len(ch)>=CFG["folder_min_apps"]:
+                fp.append({
+                    "name":
+                        c if i==0
+                        else f"{c} {i//CFG['folder_max_apps']+1}",
+                    "apps":ch
+                })
+            else:
+                loose+=ch
+
+    if len(fp)>CFG["max_folders"]:
+        fp.sort(key=lambda z:-len(z["apps"]))
+        loose+=sum(
+            (z["apps"] for z in fp[CFG["max_folders"]:]),
+            []
+        )
+        fp=fp[:CFG["max_folders"]]
+
+    out+=loose
+    outids={x["id"] for x in out}
+
+    print("[5/7] Layout...")
+
+    av=balanced(
+        slots(items,outids),
+        len(fp)
+    )
+
+    if len(av)<len(fp):
+        raise RuntimeError(
+            "Not enough desktop positions to place folders."
+        )
+
+    for f,p in zip(fp,av):
+        f.update(
+            screen=p[0],
+            cellX=p[1],
+            cellY=p[2]
+        )
+
+    used={
+        (f["screen"],f["cellX"],f["cellY"])
+        for f in fp
+    }
+
+    oslots=list(dict.fromkeys(
+        (
+            x["screen"],
+            x["cellX"],
+            x["cellY"]
+        )
+        for x in desk
+    ))
+
+    busy={
+        (
+            x["screen"],
+            x["cellX"],
+            x["cellY"]
+        )
+        for x in out
+        if x["container"]==-100
+    }
+
+    free=[
+        s for s in oslots
+        if s not in busy and s not in used
+    ]
+
+    nested=[
+        x for x in out
+        if x["container"]!=-100
+    ]
+
+    if len(free)<len(nested):
+        raise RuntimeError(
+            "Not enough desktop slots for frequent apps."
+        )
+
+    for x,p in zip(
+        sorted(nested,key=lambda x:-x["score"]),
+        free
+    ):
+        x["desktop"]=p
+
+    oldids=sorted(folders)
+    nid=max([x["id"] for x in items] or [0])+1
+
+    for i,f in enumerate(fp):
+        if i<len(oldids):
+            f["id"]=oldids[i]
+            f["new"]=False
+        else:
+            f["id"]=nid
+            f["new"]=True
+            nid+=1
+
+        for j,x in enumerate(f["apps"]):
+            x["fx"]=j%CFG["folder_cols"]
+            x["fy"]=j//CFG["folder_cols"]
+
+    pp={
+        "device":dev,
+        "provider":provider,
+        "launcher":lp,
+
+        "outside":[
+            {
+                "id":x["id"],
+                "title":x["label"],
+                "package":x["package"],
+                "score":x["score"],
+                "screen":
+                    x["desktop"][0]
+                    if isinstance(x.get("desktop"),tuple)
+                    else x["screen"],
+                "cellX":
+                    x["desktop"][1]
+                    if isinstance(x.get("desktop"),tuple)
+                    else x["cellX"],
+                "cellY":
+                    x["desktop"][2]
+                    if isinstance(x.get("desktop"),tuple)
+                    else x["cellY"],
+                "nested":x["container"]!=-100
+            }
+            for x in out
+        ],
+
+        "folders":[
+            {
+                "id":f["id"],
+                "new":f["new"],
+                "name":f["name"],
+                "screen":f["screen"],
+                "cellX":f["cellX"],
+                "cellY":f["cellY"],
+                "apps":[
+                    {
+                        "id":x["id"],
+                        "title":x["label"],
+                        "package":x["package"],
+                        "score":x["score"],
+                        "cellX":x["fx"],
+                        "cellY":x["fy"]
+                    }
+                    for x in f["apps"]
+                ]
+            }
+            for f in fp
+        ],
+
+        "loose":[
+            {
+                "id":x["id"],
+                "title":x["label"],
+                "package":x["package"],
+                "category":x["category"],
+                "score":x["score"]
+            }
+            for x in loose
+        ]
+    }
+
+    P.write_text(
+        json.dumps(pp,indent=2,ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+    state={
+        "provider":provider,
+        "launcher":lp,
+        "items":[
+            {
+                "id":x["id"],
+                "c":x["container"],
+                "s":x["screen"],
+                "x":x["cellX"],
+                "y":x["cellY"]
+            }
+            for x in apps
+        ],
+        "folders":[
+            {
+                "id":x["id"],
+                "title":x["title"],
+                "c":x["container"],
+                "s":x["screen"],
+                "x":x["cellX"],
+                "y":x["cellY"]
+            }
+            for x in folders.values()
+        ],
+        "new":[
+            f["id"]
+            for f in fp
+            if f["new"]
+        ]
+    }
+
+    S.write_text(
+        json.dumps(state,indent=2,ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+    print("[6/7] Applying...")
+    apply(pp,state)
+    report(pp)
+
+    print("[7/7] DONE")
+    print(f"Report: {R}")
+    print(f"Rollback: {S}")
+    print(f"Plan: {P}")
+
+def report(pp):
+    a=[
+        "HYPEROS SMART ORGANIZER",
+        "AUTO APPLY",
+        "="*60,
+        f"Android: {pp['device'].get('android','?')} SDK {pp['device'].get('sdk','?')}",
+        f"HyperOS: {pp['device'].get('hyperos','?')}",
+        f"Provider: {pp['provider']}",
+        "",
+        "KEEP OUTSIDE",
+        "="*60
+    ]
+
+    a += [
+        f"{i+1:02d}. {x['title']} | {x['package']} | score={x['score']}"
+        for i,x in enumerate(pp["outside"])
+    ]
+
+    a += [
+        "",
+        "FOLDERS",
+        "="*60
+    ]
+
+    for f in pp["folders"]:
+        a.append(
+            f"\n[{f['name']}] "
+            f"screen={f['screen']} "
+            f"x={f['cellX']} "
+            f"y={f['cellY']}"
+        )
+
+        a += [
+            f"  - {x['title']} | {x['package']} | score={x['score']}"
+            for x in f["apps"]
+        ]
+
+    a += [
+        "",
+        "LOOSE",
+        "="*60
+    ]
+
+    a += (
+        [
+            f"- {x['title']} | {x['package']} | {x['category']} | score={x['score']}"
+            for x in pp["loose"]
+        ]
+        or
+        ["None"]
+    )
+
+    R.write_text(
+        "\n".join(a),
+        encoding="utf-8"
+    )
+
+def main():
+    c=sys.argv[1] if len(sys.argv)>1 else "apply"
+
+    if c in("scan","apply"):
+        plan()
+
+    elif c=="rollback":
+        if not S.exists():
+            print("No rollback file.")
+        else:
+            rollback(
+                json.loads(
+                    S.read_text(encoding="utf-8")
+                )
+            )
+            print("Rollback completed.")
+
+    elif c=="config":
+        print(
+            json.dumps(
+                CFG,
+                indent=2,
+                ensure_ascii=False
+            )
+        )
+
+    elif c=="paths":
+        print(B,C,P,S,R)
+
+    else:
+        print(
+            "Usage: hyperorganizer "
+            "[apply|scan|rollback|config|paths]"
+        )
+
+if __name__=="__main__":
+    main()
+PY
+
+chmod 755 "$BASE/hyperorganizer.py"
+
+cat > "$BIN/hyperorganizer" <<'SH'
+#!/data/data/com.termux/files/usr/bin/bash
+exec python "$HOME/hyperos_organizer/hyperorganizer.py" "$@"
+SH
+
+chmod 755 "$BIN/hyperorganizer"
+python -m py_compile "$BASE/hyperorganizer.py"
+echo "  Syntax OK"
+
+echo "[5/6] Running..."
+hyperorganizer apply
+
+echo "[6/6] Finished."
+echo "To undo: hyperorganizer rollback"
+
+then Yes. code 1 means the script exited with an error. The important part is the error text immediately before code 1; press enter is just Termux's display behavior.
+
+Don't rerun the whole thing yet. Run this and paste the output:
+
+hyperorganizer apply 2>&1 | tee ~/hyperos_organizer/error.log
+
+If hyperorganizer: command not found, run:
+
+python ~/hyperos_organizer/hyperorganizer.py apply 2>&1 | tee ~/hyperos_organizer/error.log
+
+That will expose the actual failure instead of just code 1.
+
+~ $ hyperorganizer apply 2>&1 | tee ~/hyperos_organizer/error.log
+hyperorganizer: command not found
+~ $ python ~/hyperos_organizer/hyperorganizer.py apply 2>&1 | tee ~/hyperos_organizer/error.log
+/data/data/com.termux/files/usr/bin/python: can't open file '/data/data/com.termux/files/home/hyperos_organizer/hyperorganizer.py': [Errno 2] No such file or directory
+~ $
+

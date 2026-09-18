@@ -1,0 +1,900 @@
+)  
+
+outside = [  
+    item  
+    for item in apps  
+    if item["score"] >= cutoff  
+]  
+
+if len(outside) < min(  
+    3,  
+    len(apps)  
+):  
+    outside = apps[  
+        :min(  
+            3,  
+            len(apps)  
+        )  
+    ]  
+
+outside = outside[  
+    :DEFAULTS[  
+        "keep_outside_max_count"  
+    ]  
+]  
+
+outside_ids = {  
+    item["id"]  
+    for item in outside  
+}  
+
+# ---------------------------------------------------------  
+# Semantic grouping  
+# ---------------------------------------------------------  
+
+category_apps = defaultdict(list)  
+
+for item in apps:  
+    if item["id"] in outside_ids:  
+        continue  
+
+    category_apps[  
+        item["category"]  
+    ].append(item)  
+
+folders_plan = []  
+loose_apps = []  
+
+for category, group in sorted(  
+    category_apps.items(),  
+    key=lambda pair: (  
+        -len(pair[1]),  
+        pair[0]  
+    )  
+):  
+    if len(group) >= DEFAULTS[  
+        "folder_min_apps"  
+    ]:  
+        folders_plan.append(  
+            (  
+                category,  
+                group  
+            )  
+        )  
+    else:  
+        loose_apps.extend(  
+            group  
+        )  
+
+# Avoid making a ridiculous number of folders.  
+if len(folders_plan) > DEFAULTS[  
+    "max_folders"  
+]:  
+    folders_plan.sort(  
+        key=lambda pair: -len(pair[1])  
+    )  
+
+    kept = folders_plan[  
+        :DEFAULTS[  
+            "max_folders"  
+        ]  
+    ]  
+
+    removed = folders_plan[  
+        DEFAULTS[  
+            "max_folders":  
+        ]  
+    ]  
+
+    for _, group in removed:  
+        loose_apps.extend(  
+            group  
+        )  
+
+    folders_plan = kept  
+
+# ---------------------------------------------------------  
+# Make the plan  
+# ---------------------------------------------------------  
+
+plan = {  
+    "generated_at":  
+        time.strftime(  
+            "%Y-%m-%d %H:%M:%S"  
+        ),  
+
+    "mode":  
+        "READ_ONLY",  
+
+    "provider":  
+        provider,  
+
+    "device":  
+        device,  
+
+    "existing_folders":  
+        list(folders.values()),  
+
+    "keep_outside":  
+        [  
+            {  
+                "title":  
+                    item["label"],  
+
+                "package":  
+                    item["package"],  
+
+                "score":  
+                    item["score"],  
+
+                "screen":  
+                    item["screen"],  
+
+                "cellX":  
+                    item["cellX"],  
+
+                "cellY":  
+                    item["cellY"]  
+            }  
+            for item in outside  
+        ],  
+
+    "folders":  
+        [  
+            {  
+                "name":  
+                    category,  
+
+                "apps":  
+                    [  
+                        {  
+                            "id":  
+                                item["id"],  
+
+                            "title":  
+                                item["label"],  
+
+                            "package":  
+                                item["package"],  
+
+                            "score":  
+                                item["score"],  
+
+                            "screen":  
+                                item["screen"],  
+
+                            "cellX":  
+                                item["cellX"],  
+
+                            "cellY":  
+                                item["cellY"],  
+
+                            "container":  
+                                item["container"]  
+                        }  
+                        for item in group  
+                    ]  
+            }  
+            for category, group  
+            in folders_plan  
+        ],  
+
+    "loose":  
+        [  
+            {  
+                "id":  
+                    item["id"],  
+
+                "title":  
+                    item["label"],  
+
+                "package":  
+                    item["package"],  
+
+                "category":  
+                    item["category"],  
+
+                "score":  
+                    item["score"]  
+            }  
+            for item in loose_apps  
+        ]  
+}  
+
+(BASE / "plan.json").write_text(  
+    json.dumps(  
+        plan,  
+        indent=2,  
+        ensure_ascii=False  
+    ),  
+    encoding="utf-8"  
+)  
+
+# ---------------------------------------------------------  
+# Human-readable report  
+# ---------------------------------------------------------  
+
+report = []  
+
+report.append(  
+    "HYPEROS SMART ORGANIZER"  
+)  
+report.append(  
+    "READ-ONLY ANALYSIS"  
+)  
+report.append(  
+    "=" * 64  
+)  
+report.append(  
+    f"Launcher: {device.get('launcher', '?')}"  
+)  
+report.append(  
+    f"Android: {device.get('android', '?')} "  
+    f"(SDK {device.get('sdk', '?')})"  
+)  
+report.append(  
+    f"HyperOS/MIUI: {device.get('miui_ui', '?')}"  
+)  
+report.append(  
+    f"Screen: {device.get('screen', '?')}"  
+)  
+report.append(  
+    f"Launcher provider: {provider or 'NOT FOUND'}"  
+)  
+report.append(  
+    ""  
+)  
+
+report.append(  
+    "============================================================"  
+)  
+report.append(  
+    "KEEP OUTSIDE FOLDERS"  
+)  
+report.append(  
+    "============================================================"  
+)  
+
+for index, item in enumerate(  
+    outside,  
+    1  
+):  
+    report.append(  
+        f"{index:02d}. "  
+        f"{item['label']} "  
+        f"| {item['package']} "  
+        f"| score={item['score']}"  
+    )  
+
+report.append("")  
+
+report.append(  
+    "============================================================"  
+)  
+report.append(  
+    "SMART FOLDER PLAN"  
+)  
+report.append(  
+    "============================================================"  
+)  
+
+for category, group in folders_plan:  
+    report.append(  
+        f"\n📁 {category} "  
+        f"({len(group)} apps)"  
+    )  
+
+    for item in group:  
+        report.append(  
+            f"    • {item['label']} "  
+            f"| {item['package']} "  
+            f"| score={item['score']}"  
+        )  
+
+report.append("")  
+
+report.append(  
+    "============================================================"  
+)  
+report.append(  
+    "LEFT LOOSE"  
+)  
+report.append(  
+    "============================================================"  
+)  
+
+if loose_apps:  
+    for item in loose_apps:  
+        report.append(  
+            f"• {item['label']} "  
+            f"| {item['package']} "  
+            f"| {item['category']} "  
+            f"| score={item['score']}"  
+        )  
+else:  
+    report.append(  
+        "None"  
+    )  
+
+report.append("")  
+
+report.append(  
+    "============================================================"  
+)  
+report.append(  
+    "CURRENT EXISTING FOLDERS"  
+)  
+report.append(  
+    "============================================================"  
+)  
+
+if folders:  
+    for folder in folders.values():  
+        report.append(  
+            f"📁 {folder['title']} "  
+            f"| id={folder['id']} "  
+            f"| screen={folder['screen']} "  
+            f"| x={folder['cellX']} "  
+            f"| y={folder['cellY']}"  
+        )  
+else:  
+    report.append(  
+        "None"  
+    )  
+
+report.append("")  
+
+report.append(  
+    "No launcher modification was performed."  
+)  
+
+report_text = "\n".join(  
+    report  
+)  
+
+(BASE / "REPORT.txt").write_text(  
+    report_text,  
+    encoding="utf-8"  
+)  
+
+print()  
+print(report_text)  
+print()  
+print(  
+    f"JSON plan : {BASE}/plan.json"  
+)  
+print(  
+    f"Report    : {BASE}/REPORT.txt"  
+)  
+print(  
+    f"Raw data  : {RAW}/"  
+)
+
+def main():
+if len(os.sys.argv) == 1:
+scan()
+return
+
+command = os.sys.argv[1]  
+
+if command in (  
+    "scan",  
+    "plan"  
+):  
+    scan()  
+
+elif command == "config":  
+    print(  
+        CONF.read_text(  
+            encoding="utf-8"  
+        )  
+    )  
+
+elif command == "paths":  
+    print(  
+        f"BASE={BASE}"  
+    )  
+    print(  
+        f"RAW={RAW}"  
+    )  
+    print(  
+        f"CONFIG={CONF}"  
+    )  
+
+else:  
+    print(  
+        "Usage: hyperorganizer "  
+        "[scan|plan|config|paths]"  
+    )
+
+if name == "main":
+main()
+PY
+
+chmod 755 "$BASE/hyperorganizer.py"
+
+cat > "$BIN/hyperorganizer" <<'SH'
+#!/data/data/com.termux/files/usr/bin/bash
+exec python "$HOME/hyperos_organizer/hyperorganizer.py" "$@"
+SH
+
+chmod 755 "$BIN/hyperorganizer"
+
+echo "[7/9] Verifying the installed files..."
+ls -l "$BIN/rish" "$BIN/rish_shizuku.dex" "$BIN/hyperorganizer"
+
+echo
+echo "[8/9] Running the first READ-ONLY scan..."
+echo "      Nothing will be moved, deleted, or reordered."
+echo
+
+hyperorganizer scan
+
+echo
+echo "[9/9] Done."
+echo
+echo "============================================================"
+echo "NEXT:"
+echo "============================================================"
+echo
+echo "Your generated files are:"
+echo
+echo "  ~/hyperos_organizer/REPORT.txt"
+echo "  ~/hyperos_organizer/plan.json"
+echo "  ~/hyperos_organizer/raw/"
+echo
+echo "The important one is REPORT.txt."
+echo
+BOOTSTRAP
+
+chmod +x ~/hyperos_bootstrap.sh
+~/hyperos_bootstrap.sh"
+
+و انا كان طلبي كالتالي "انا عندي termux
+عاوز script يفحص كل التطبيقات علي الشاشة الرئيسية في redmi 12 hyperos و يرتبها في folders
+الدنيا عندي بايظة خالصتمام انا عندي termux و shizuku
+و افضل كمان لو يكون فيه حاجة ذكية للتطبيقات اللي بيتم استخدامها بكثرة تتفهم و متتحطش في folder
+و افضل اكثر كمان لو التطبيق يقدر يقرر ليا هو يحط folders بشكل ايه (عشان مثلا script ممكن يعملهم بشكل راسي و افقي فقط و المكان هيبقي شكله bloated و سيء))
+
+المهم السكريبت قاعد فترة طويلة جدا في اول خطوة و مش شايف اي progress bar كد انه مش معلق اعتقد محتاج انك تعدله بحيث يكون كل حاجة واضحة وو تشوف لو فيه مشاكل في الكود @Thinking + محتاج الكود يكون بيعمل طلبي لو هو كان ناسي اي حاجة
+think 10 times while trading it and  think 10 times testing it againdt online info then 5 times thinking about the final output performance and cabpility
+
+و بعدين انت يا وسخ رديت ب "Worked for 1m 17s
+
+أيوه. راجعت مسار التنفيذ نفسه، والسبب الأقوى للوقوف عند [1/9] واضح:
+
+termux-setup-storage في Termux يطلب تأكيدًا عندما يكون ~/storage موجودًا أصلًا. في سكربتك أنت مخفيّ كل الـ stdout/stderr بـ >/dev/null 2>&1، فلو الأداة واقفة تنتظر y/n أنت لن ترى السؤال أصلًا. هذا سلوك موجود في سكربت Termux نفسه. 
+
+وفيه مشاكل أخرى فعلية في السكربت:
+
+pkg install -y python أيضًا مخفي بالكامل، مع أن pkg قد ينفذ تحديثات قبل التثبيت. 
+
+أوامر rish ليس لها timeout، فلو Shizuku علّق أمرًا لن تعرف أين.
+
+عندك bug حقيقي هنا: DEFAULTS["max_folders":]، وسيظهر عندما يتجاوز عدد مجموعات الفولدرات 6. اختبرت التعبير وفعليًا ينتج KeyError.
+
+folder_max_apps موجود في config لكن لا يتم تطبيقه.
+
+preserve_existing_folders موجود لكنه غير مستخدم.
+
+السكربت الحالي لا يرتب فعليًا؛ هو يعمل READ_ONLY ويولد plan.json فقط.
+
+Xiaomi launcher فعلًا لديه جدول favorites يحتوي على container/screen/cellX/cellY/itemType في نسخ HyperOS المفحوصة، لذلك فكرة القراءة من provider منطقية، لكن الكتابة الفعلية يجب أن تعتمد على نسخة launcher الموجودة عندك. 
+
+rish -c 'id' هو الاستخدام الصحيح لـ rish مع Shizuku، ونسخ Android الحديثة تتطلب أن يكون الـ DEX غير قابل للكتابة؛ الجزء الخاص بك بهذا الشأن متوافق مع تعليمات rish الحالية. 
+
+
+أولًا: أوقف السكربت الحالي
+
+اضغط:
+
+CTRL+C
+
+ثم عدّل [1/9]
+
+استبدل هذا:
+
+echo "[1/9] Checking Termux storage..."
+termux-setup-storage >/dev/null 2>&1 || true
+sleep 1
+
+بهذا:
+
+echo "[1/9] Checking Termux storage..."
+
+if [ ! -d "$HOME/storage" ]; then
+    echo "  ~/storage does not exist."
+    echo "  Initializing Termux shared storage..."
+    echo "  If Android shows a permission dialog, allow it."
+    termux-setup-storage || {
+        echo "ERROR: termux-setup-storage failed."
+        exit 10
+    }
+else
+    echo "  ~/storage already exists."
+    echo "  Skipping termux-setup-storage to avoid the hidden confirmation prompt."
+fi
+
+if [ ! -d "$HOME/storage/shared" ]; then
+    echo
+    echo "ERROR: ~/storage/shared is not available."
+    echo
+    echo "Run this manually once:"
+    echo "  termux-setup-storage"
+    echo
+    echo "Then run the bootstrap again."
+    exit 10
+fi
+
+echo "  OK: shared storage is accessible."
+
+ده أهم تعديل.
+
+ثانيًا: أظهر تثبيت Python
+
+استبدل:
+
+pkg install -y python >/dev/null 2>&1 || {
+
+بـ:
+
+pkg install -y python || {
+
+وخلي الرسائل ظاهرة. كده لو pkg بطيء أو الـ mirror فيه مشكلة ستشوفها بدل شاشة ثابتة.
+
+ثالثًا: خلّي rish يظهر progress ويقتل نفسه لو علّق
+
+داخل hyperorganizer.py استبدل الدالة الحالية بالكامل:
+
+def run_rish(command):
+    p = subprocess.run(
+        [RISH, "-c", command],
+        text=True,
+        capture_output=True
+    )
+    return p.returncode, p.stdout, p.stderr
+
+بـ:
+
+def run_rish(command, timeout=60):
+    start = time.monotonic()
+
+    try:
+        p = subprocess.Popen(
+            [RISH, "-c", command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+    except Exception as exc:
+        return 127, "", str(exc)
+
+    spinner = "|/-\\"
+    frame = 0
+
+    while p.poll() is None:
+        elapsed = time.monotonic() - start
+
+        print(
+            f"\r      Shizuku {spinner[frame % len(spinner)]} "
+            f"{elapsed:5.1f}s",
+            end="",
+            flush=True
+        )
+
+        frame += 1
+
+        if elapsed >= timeout:
+            p.kill()
+            out, err = p.communicate()
+
+            print(
+                "\r      Shizuku TIMEOUT "
+                f"after {elapsed:.1f}s"
+                + " " * 20
+            )
+
+            return (
+                124,
+                out,
+                err or f"Command timed out after {timeout}s"
+            )
+
+        time.sleep(0.5)
+
+    out, err = p.communicate()
+
+    elapsed = time.monotonic() - start
+
+    print(
+        f"\r      Shizuku ✓ {elapsed:.1f}s"
+        + " " * 20
+    )
+
+    return p.returncode, out, err
+
+وبالتالي dumpsys usagestats لن يبقى صامتًا لدقائق بدون أي دليل على أنه شغال.
+
+وأفضل تعدل استدعاء usage إلى:
+
+usage_code, usage_out, usage_err = run_rish(
+    "dumpsys usagestats",
+    timeout=120
+)
+
+لأن بيانات Usage Stats قد تكون كبيرة، فلا أريد timeout قصيرًا جدًا.
+
+رابعًا: أصلح الـ bug الحقيقي
+
+ابحث عن:
+
+removed = folders_plan[
+    DEFAULTS[
+        "max_folders":
+    ]
+]
+
+واجعله:
+
+removed = folders_plan[
+    DEFAULTS[
+        "max_folders"
+    ]:
+]
+
+الفرق مهم جدًا: الـ : يجب أن يكون بعد إغلاق DEFAULTS[...].
+
+خامسًا: أضف progress أوضح داخل الـ scan
+
+قبل كل مجموعة كبيرة، خلي الرسائل هكذا:
+
+print("[1/7] Reading device properties...")
+
+ثم:
+
+print("[2/7] Reading launcher database...")
+
+ثم:
+
+print("[3/7] Reading launcher screens...")
+
+ثم:
+
+print("[4/7] Dumping launcher UI hierarchy...")
+
+ثم:
+
+print("[5/7] Collecting app usage statistics...")
+
+ثم:
+
+print("[6/7] Building intelligent app scores...")
+
+ثم:
+
+print("[7/7] Building folder plan...")
+
+هذا مع الـ spinner سيخليك تعرف بالضبط أين هو.
+
+النتيجة المتوقعة بعد التعديلات
+
+بدل:
+
+[1/9] Checking Termux storage...
+
+وتفضل واقف، ستشوف شيئًا مثل:
+
+[1/9] Checking Termux storage...
+  ~/storage already exists.
+  Skipping termux-setup-storage to avoid the hidden confirmation prompt.
+  OK: shared storage is accessible.
+
+[2/9] Installing Python...
+...
+[3/9] Locating the exported Shizuku files...
+  rish: /storage/...
+  dex : /storage/...
+
+[5/9] Testing Shizuku <-> Termux...
+
+uid=2000(shell) gid=2000(shell)...
+
+[6/9] Creating the Smart Organizer engine...
+
+[8/9] Running the first READ-ONLY scan...
+
+[1/7] Reading device properties...
+      Shizuku ✓ 0.3s
+...
+[5/7] Collecting app usage statistics...
+      Shizuku | 14.5s
+      Shizuku / 15.0s
+      Shizuku ✓ 15.7s
+
+والـ rish نفسه مصمم ليشغّل أوامر shell بهذه الطريقة عبر Shizuku. 
+
+النقطة المهمة: أنا لا أنصح بتوصيل جزء "الترتيب الفعلي" بهذا السكربت الآن. أولًا لازم ينجح الـ scan ويطلع REPORT.txt وplan.json بشكل صحيح؛ بعد ذلك نضيف مرحلة APPLY منفصلة تعمل backup لقاعدة launcher قبل أي insert/update/delete. ده مهم لأن السكربت الحالي أصلًا Read-Only، وأي خطأ في provider أو container/screen/cellX/cellY ممكن يلخبط الـ launcher بدل ما يصلحه."
+
+
+U MF PIECE OF SHIT MAKE THE WHOLE CODE ONE BIG COPY PASTE U STUPID NIGGER DON'T MAKE ME DO ALL THE MANUAL WORK U BITCH ASS NIGGA
+then u nigga see
+Worked for 4m 1s
+
+راجعت الملف كاملًا؛ النسخة الأصلية كانت فعلًا READ_ONLY ولا تنفّذ الترتيب، وفيها أخطاء منها max_folders: والـmain guard، كما أن إصلاح الـspinner السابق كان يمكن أن يظل يعلق بسبب امتلاء pipe مع dumpsys. 
+
+هذا أمر واحد فقط. الصقه كاملًا في Termux. يثبت/يجهز rish، يفحص التطبيقات، يحسب الاستخدام، يكوّن فولدرات مدمجة، يحرّك التطبيقات فعليًا، يتحقق من النتيجة، ويحفظ rollback تلقائيًا. وطريقة RISH_APPLICATION_ID=com.termux واشتراط أن يكون الـDEX غير قابل للكتابة متوافقة مع rish الرسمي. 
+
+#!/data/data/com.termux/files/usr/bin/bash
+set -Eeuo pipefail
+export PATH="$PREFIX/bin:$PATH"
+BASE="$HOME/hyperos_organizer"; BIN="$PREFIX/bin"; BOX="$HOME/storage/shared/hyperos_sandbox"
+mkdir -p "$BASE/raw"
+
+echo "============================================================"
+echo " HYPEROS SMART ORGANIZER — AUTO APPLY"
+echo "============================================================"
+echo "[1/6] Termux storage..."
+if [ ! -d "$HOME/storage/shared" ]; then
+  termux-setup-storage
+fi
+[ -d "$HOME/storage/shared" ] || { echo "ERROR: shared storage unavailable."; exit 10; }
+echo "  OK"
+
+echo "[2/6] Python..."
+command -v python >/dev/null 2>&1 || pkg install -y python
+echo "  OK"
+
+echo "[3/6] Shizuku..."
+RISH_SRC=""; DEX_SRC=""
+for d in "$BOX" "$HOME/storage/shared/Shizuku" "$HOME/storage/shared/shizuku" "$HOME"; do
+  [ -n "$RISH_SRC" ] && [ -f "$RISH_SRC" ] || { [ -f "$d/rish" ] && RISH_SRC="$d/rish"; }
+  [ -n "$DEX_SRC" ] && [ -f "$DEX_SRC" ] || { [ -f "$d/rish_shizuku.dex" ] && DEX_SRC="$d/rish_shizuku.dex"; }
+done
+if [ -f "$BIN/rish" ] && [ -f "$BIN/rish_shizuku.dex" ]; then
+  RISH_SRC="$BIN/rish"; DEX_SRC="$BIN/rish_shizuku.dex"
+fi
+if [ -z "$RISH_SRC" ] || [ -z "$DEX_SRC" ]; then
+  echo "ERROR: rish + rish_shizuku.dex not found."
+  echo "Put the exported Shizuku files in ~/storage/shared/hyperos_sandbox/"
+  exit 20
+fi
+cp -f "$RISH_SRC" "$BIN/rish"
+cp -f "$DEX_SRC" "$BIN/rish_shizuku.dex"
+chmod 755 "$BIN/rish"
+chmod 400 "$BIN/rish_shizuku.dex"
+if grep -qE 'RISH_APPLICATION_ID="[^"]*"' "$BIN/rish"; then
+  sed -i 's/RISH_APPLICATION_ID="[^"]*"/RISH_APPLICATION_ID="com.termux"/g' "$BIN/rish"
+else
+  printf '\nexport RISH_APPLICATION_ID="com.termux"\n' >> "$BIN/rish"
+fi
+ID_OUT="$(rish -c id 2>&1 || true)"
+printf '%s\n' "$ID_OUT"
+printf '%s\n' "$ID_OUT" | grep -Eq 'uid=2000|uid=0' || {
+  echo "ERROR: authorize Termux in Shizuku -> Use Shizuku in terminal apps."
+  exit 30
+}
+
+echo "[4/6] Installing engine..."
+cat > "$BASE/hyperorganizer.py" <<'PY'
+#!/data/data/com.termux/files/usr/bin/python
+import json,math,os,re,shlex,shutil,subprocess,sys,tempfile,time
+from collections import defaultdict
+from pathlib import Path
+
+B=Path.home()/"hyperos_organizer"
+RAW=B/"raw"; C=B/"config.json"; P=B/"plan.json"; S=B/"rollback.json"; R=B/"REPORT.txt"
+B.mkdir(parents=True,exist_ok=True); RAW.mkdir(parents=True,exist_ok=True)
+
+D={
+    "keep_outside_max_count":12,
+    "keep_outside_fraction":0.25,
+    "folder_min_apps":3,
+    "folder_max_apps":8,
+    "max_folders":6,
+    "half_life_days":14,
+    "folder_cols":4,
+    "folder_rows":4
+}
+
+if not C.exists():
+    C.write_text(json.dumps(D,indent=2),encoding="utf-8")
+
+try:
+    CFG=json.loads(C.read_text(encoding="utf-8"))
+except:
+    CFG={}
+
+for k,v in D.items():
+    CFG.setdefault(k,v)
+
+RISH=shutil.which("rish") or str(Path(os.environ.get("PREFIX",""))/"bin"/"rish")
+
+def rr(cmd,timeout=60):
+    a=time.monotonic()
+    op=er=None
+    p=None
+    try:
+        f1=tempfile.NamedTemporaryFile(delete=False)
+        f2=tempfile.NamedTemporaryFile(delete=False)
+        op,er=f1.name,f2.name
+        f1.close();f2.close()
+
+        with open(op,"w",encoding="utf-8",errors="ignore") as o, \
+             open(er,"w",encoding="utf-8",errors="ignore") as e:
+            p=subprocess.Popen([RISH,"-c",cmd],stdout=o,stderr=e)
+            sp="|/-\\"
+            i=0
+            while p.poll() is None:
+                t=time.monotonic()-a
+                print(f"\r      Shizuku {sp[i%4]} {t:6.1f}s",end="",flush=True)
+                i+=1
+                if t>=timeout:
+                    try:
+                        p.kill()
+                    except:
+                        pass
+                    p.wait()
+                    print(f"\r      Shizuku TIMEOUT {t:.1f}s"+" "*20)
+                    return 124,Path(op).read_text(errors="ignore"),Path(er).read_text(errors="ignore")
+                time.sleep(.5)
+
+        t=time.monotonic()-a
+        print(f"\r      Shizuku {'OK' if p.returncode==0 else 'FAIL'} {t:.1f}s"+" "*20)
+        return p.returncode,Path(op).read_text(errors="ignore"),Path(er).read_text(errors="ignore")
+
+    except Exception as x:
+        return 127,"",str(x)
+
+    finally:
+        for x in(op,er):
+            if x:
+                try:
+                    os.unlink(x)
+                except:
+                    pass
+
+def q(x):
+    return shlex.quote(str(x))
+
+def run(cmd,timeout=60):
+    c,o,e=rr(cmd,timeout)
+    if c:
+        return False,o,e
+    return True,o,e
+
+def rows(t):
+    out=[]
+    for b in t.split("Row: ")[1:]:
+        d=dict(re.findall(r'(\w+)=((?:[^,]|,(?!\s*\w+=))*)',b))
+        if d:
+            out.append({k:v.strip() for k,v in d.items()})
+    return out
+
+def num(x,d=0):
+    try:
+        return int(x)
+    except:
+        try:
+            return float(x)
+        except:
+            return d
+
+def pkg(i):
+    m=re.search(r'(?:component=|package=)([^/;,\s]+)',i or "")
+    if not m:
+        m=re.search(r'package:([^/;,\s]+)',i or "")
+    return m.group(1) if m else None
+
+def usage(t):
+    z={}
+    for b in re.split(r'(?=package=[^\s]+)',t or ""):
+        m=re.search(r'package=([^\s]+)',b)
+        if not m or "." not in m.group(1):
+            continue
+        p=m.group(1).rstrip(",")
+        g={}
+        for k in(
+            "totalTimeInForeground",
+            "totalTimeForeground",
+            "totalTimeUsed",
+            "lastTimeUsed",
